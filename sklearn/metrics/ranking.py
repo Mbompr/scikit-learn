@@ -415,7 +415,7 @@ def precision_recall_curve(y_true, probas_pred, pos_label=None,
 
 
 def roc_curve(y_true, y_score, pos_label=None, sample_weight=None,
-              drop_intermediate=True):
+              drop_intermediate=False):
     """Compute Receiver operating characteristic (ROC)
 
     Note: this implementation is restricted to the binary classification task.
@@ -439,9 +439,11 @@ def roc_curve(y_true, y_score, pos_label=None, sample_weight=None,
     sample_weight : array-like of shape = [n_samples], optional
         Sample weights.
 
-    drop_intermediate : boolean, optional (default=True)
+    drop_intermediate : boolean, optional (default=False)
         Whether to drop some suboptimal thresholds which would not appear
-        on a plotted ROC curve.
+        on a plotted ROC curve. This is useful in order to create lighter
+        ROC curves, but might cause problems for example while creating
+        macro-average ROC curves in a multi-class scheme.
 
     Returns
     -------
