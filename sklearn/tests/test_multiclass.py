@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.sparse as sp
+from sklearn.linear_model.stochastic_gradient import SGDClassifier
 
 from sklearn.utils.testing import assert_array_equal
 from sklearn.utils.testing import assert_equal
@@ -175,6 +176,31 @@ def test_ovr_multiclass():
 
         # test input as label indicator matrix
         clf = OneVsRestClassifier(base_clf).fit(X, Y)
+        y_pred = clf.predict([[0, 0, 4]])[0]
+        assert_array_equal(y_pred, [0, 0, 1])
+
+
+def test_ovr_multiclass_partial_fit():
+    # Toy dataset where features correspond directly to labels.
+    X = np.array([[0, 0, 5], [0, 5, 0], [3, 0, 0], [0, 0, 6], [6, 0, 0]])
+    y = ["eggs", "spam", "ham", "eggs", "ham"]
+    Y = np.array([[0, 0, 1],
+                  [0, 1, 0],
+                  [1, 0, 0],
+                  [0, 0, 1],
+                  [1, 0, 0]])
+
+    classes = set("ham eggs spam".split())
+
+    for base_clf in (SGDClassifier(), ):
+
+        clf = OneVsRestClassifier(base_clf).partial_fit(X, y, classes=np.unique(y))
+        assert_equal(set(clf.classes_), classes)
+        y_pred = clf.predict(np.array([[0, 0, 4]]))[0]
+        assert_equal(set(y_pred), set("eggs"))
+
+        # test input as label indicator matrix
+        clf = OneVsRestClassifier(base_clf).partial_fit(X, Y)
         y_pred = clf.predict([[0, 0, 4]])[0]
         assert_array_equal(y_pred, [0, 0, 1])
 

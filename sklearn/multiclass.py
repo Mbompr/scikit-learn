@@ -42,7 +42,7 @@ from .base import BaseEstimator, ClassifierMixin, clone, is_classifier
 from .base import MetaEstimatorMixin, is_regressor
 from .preprocessing import LabelBinarizer
 from .metrics.pairwise import euclidean_distances
-from sklearn.utils.multiclass import _check_partial_fit_first_call
+from sklearn.utils.multiclass import _check_partial_fit_first_call, type_of_target
 from .utils import check_random_state
 from .utils.validation import _num_samples
 from .utils.validation import check_consistent_length
@@ -75,16 +75,16 @@ def _fit_binary(estimator, X, y, classes=None):
     return estimator
 
 
-def _partial_fit_binary(estimator, X, y, sample_weight=None):
+def _partial_fit_binary(estimator, X, y, classes=None, sample_weight=None):
     """Fit a single binary estimator."""
     if not hasattr(estimator, "partial_fit"):
         raise ValueError("The base estimator should implement partial_fit")
 
     if sample_weight is None:
         # some classes implement partial_fit without keyword sample_weight
-        estimator.partial_fit(X, y, classes=[0, 1])
+        estimator.partial_fit(X, y, classes=classes)
     else:
-        estimator.partial_fit(X, y, classes=[0, 1], sample_weight=sample_weight)
+        estimator.partial_fit(X, y, classes=classes, sample_weight=sample_weight)
 
     return estimator
 
@@ -182,7 +182,7 @@ class OneVsRestClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
     def __init__(self, estimator, n_jobs=1):
         self.estimator = estimator
         self.n_jobs = n_jobs
-        self.estimators_ = None
+        #self.estimators_ = None
         self.label_binarizer_ = None
 
     def fit(self, X, y):
@@ -253,12 +253,20 @@ class OneVsRestClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         if self.label_binarizer_ is None:
             _check_partial_fit_first_call(self.estimator, classes)
             self.label_binarizer_ = LabelBinarizer(sparse_output=True)
-            self.label_binarizer_.fit(self.estimator.classes_)
+
+            # if we have a multilabel input
+
+
+            if type_of_target(y) == 'multilabel-indicator':
+                # useless fit
+                self.label_binarizer_.fit(y)
+            else:
+                self.label_binarizer_.fit(self.estimator.classes_)
         else:
             # Check class consistency between estimator and label binarizer
             _check_partial_fit_first_call(self.estimator, self.label_binarizer_.classes_)
 
-        if self.estimators_ is None:
+        if not hasattr(self, 'estimators_'):
             self.estimators_ = [clone(self.estimator) for _ in self.estimator.classes_]
 
         Y = self.label_binarizer_.transform(y)
@@ -268,7 +276,8 @@ class OneVsRestClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         # n_jobs > 1 in can results in slower performance due to the overhead
         # of spawning threads.  See joblib issue #112.
         self.estimators_ = Parallel(n_jobs=self.n_jobs)(delayed(_partial_fit_binary)(
-            self.estimators_[i], X, column, sample_weight=sample_weight)
+                                    self.estimators_[i], X, column, classes=[0, 1],
+                                    sample_weight=sample_weight)
             for i, column in enumerate(columns))
 
         return self
@@ -409,20 +418,21 @@ def _prepare_fit_ovo_binary(X, y, i, j):
     y_binary[y == i] = 0
     y_binary[y == j] = 1
     ind = np.arange(X.shape[0])
-    X_sampled = [ind[cond]]
+    X_sampled = X[ind[cond]]
     return y_binary, X_sampled
 
 
 def _fit_ovo_binary(estimator, X, y, i, j):
     """Fit a single binary estimator (one-vs-one)."""
-    X_sampled, y_binary = _prepare_fit_ovo_binary(X, y, i, j)
+    y_binary, X_sampled = _prepare_fit_ovo_binary(X, y, i, j)
     return _fit_binary(estimator, X_sampled, y_binary, classes=[i, j])
 
 
-def _partial_fit_ovo_binary(estimator, X, y, i, j, sample_weight=None):
+def _partial_fit_ovo_binary(estimator, X, y, i, j, classes=None, sample_weight=None):
     """Partial fit a single binary estimator (one-vs-one)."""
-    X_sampled, y_binary = _prepare_fit_ovo_binary(X, y, i, j)
-    return _partial_fit_binary(estimator, X_sampled, y_binary, sample_weight=sample_weight)
+    y_binary, X_sampled = _prepare_fit_ovo_binary(X, y, i, j)
+    return _partial_fit_binary(estimator, X_sampled, y_binary,
+                               classes=classes, sample_weight=sample_weight)
 
 
 class OneVsOneClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
@@ -465,6 +475,7 @@ class OneVsOneClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         self.estimator = estimator
         self.n_jobs = n_jobs
         self.classes_ = None
+        #self.estimators_ = None
 
     def fit(self, X, y):
         """Fit underlying estimators.
@@ -532,13 +543,14 @@ class OneVsOneClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         # Check class consistency between estimator and label binarizer
         _check_partial_fit_first_call(self.estimator, self.classes_)
 
-        if self.estimators_ is None:
-            self.estimators_ = [clone(self.estimator) for _ in self.estimator.classes_]
-
         n_classes = self.classes_.shape[0]
+        if not hasattr(self, 'estimators_'):
+            self.estimators_ = [clone(self.estimator) for i in range(n_classes) for j in range(i + 1, n_classes)]
+
         self.estimators_ = Parallel(n_jobs=self.n_jobs)(
             delayed(_partial_fit_ovo_binary)(
-                self.estimator, X, y, self.classes_[i], self.classes_[j], sample_weight=sample_weight)
+                self.estimators_[i*(n_classes) + j - (i+2)*(i+1) // 2], X, y, self.classes_[i], self.classes_[j],
+                classes=[0, 1], sample_weight=sample_weight)
             for i in range(n_classes) for j in range(i + 1, n_classes))
 
         return self
@@ -580,7 +592,6 @@ class OneVsOneClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         Y : array-like, shape = [n_samples, n_classes]
         """
         check_is_fitted(self, 'estimators_')
-
         predictions = np.vstack([est.predict(X) for est in self.estimators_]).T
         confidences = np.vstack([_predict_binary(est, X) for est in self.estimators_]).T
         return _ovr_decision_function(predictions, confidences,
