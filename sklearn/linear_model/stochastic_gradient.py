@@ -220,7 +220,8 @@ def _prepare_fit_binary(est, y, i):
     Returns y, coef, intercept.
     """
     y_i = np.ones(y.shape, dtype=np.float64, order="C")
-    y_i[y != est.classes_[i]] = -1.0
+    y_i[np.where(y != est.classes_[i])] = -1.0
+
     average_intercept = 0
     average_coef = None
 
@@ -252,10 +253,14 @@ def fit_binary(est, i, X, y, alpha, C, learning_rate, n_iter,
 
     The i'th class is considered the "positive" class.
     """
+
+
+
     # if average is not true, average_coef, and average_intercept will be
     # unused
     y_i, coef, intercept, average_coef, average_intercept = \
         _prepare_fit_binary(est, y, i)
+
     assert y_i.shape[0] == y.shape[0] == sample_weight.shape[0]
     dataset, intercept_decay = make_dataset(X, y_i, sample_weight)
 
@@ -763,6 +768,7 @@ class SGDClassifier(BaseSGDClassifier, _LearntSelectorMixin):
         elif self.loss == "modified_huber":
             binary = (len(self.classes_) == 2)
             scores = self.decision_function(X)
+            print('scores', scores)
 
             if binary:
                 prob2 = np.ones((scores.shape[0], 2))

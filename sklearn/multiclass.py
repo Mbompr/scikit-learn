@@ -42,6 +42,7 @@ from .base import BaseEstimator, ClassifierMixin, clone, is_classifier
 from .base import MetaEstimatorMixin, is_regressor
 from .preprocessing import LabelBinarizer
 from .metrics.pairwise import euclidean_distances
+from sklearn.utils.multiclass import _check_partial_fit_first_call
 from .utils import check_random_state
 from .utils.validation import _num_samples
 from .utils.validation import check_consistent_length
@@ -71,6 +72,20 @@ def _fit_binary(estimator, X, y, classes=None):
     else:
         estimator = clone(estimator)
         estimator.fit(X, y)
+    return estimator
+
+
+def _partial_fit_binary(estimator, X, y, sample_weight=None):
+    """Fit a single binary estimator."""
+    if not hasattr(estimator, "partial_fit"):
+        raise ValueError("The base estimator should implement partial_fit")
+
+    if sample_weight is None:
+        # some classes implement partial_fit without keyword sample_weight
+        estimator.partial_fit(X, y, classes=[0, 1])
+    else:
+        estimator.partial_fit(X, y, classes=[0, 1], sample_weight=sample_weight)
+
     return estimator
 
 
@@ -167,6 +182,8 @@ class OneVsRestClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
     def __init__(self, estimator, n_jobs=1):
         self.estimator = estimator
         self.n_jobs = n_jobs
+        self.estimators_ = None
+        self.label_binarizer_ = None
 
     def fit(self, X, y):
         """Fit underlying estimators.
@@ -202,6 +219,61 @@ class OneVsRestClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
             for i, column in enumerate(columns))
 
         return self
+
+    def partial_fit(self, X, y, classes=None, sample_weight=None):
+        """Partial fit underlying estimators.
+
+        Parameters
+        ----------
+        X : (sparse) array-like, shape = [n_samples, n_features]
+            Data.
+
+        y : (sparse) array-like, shape = [n_samples] or [n_samples, n_classes]
+            Multi-class targets. An indicator matrix turns on multilabel
+            classification.
+
+        classes : array, shape = [n_classes]
+            Classes across all calls to partial_fit.
+            Can be obtained by via `np.unique(y_all)`, where y_all is the
+            target vector of the entire dataset.
+            This argument is required for the first call to partial_fit
+            and can be omitted in the subsequent calls.
+            Note that y doesn't need to contain all labels in `classes`.
+
+        sample_weight : array-like, shape (n_samples,), optional
+            Weights applied to individual samples.
+            If not provided, uniform weights are assumed.
+
+        Returns
+        -------
+        self
+        """
+
+        # Case you have not launched fit or partial_fit yet
+        if self.label_binarizer_ is None:
+            _check_partial_fit_first_call(self.estimator, classes)
+            self.label_binarizer_ = LabelBinarizer(sparse_output=True)
+            self.label_binarizer_.fit(self.estimator.classes_)
+        else:
+            # Check class consistency between estimator and label binarizer
+            _check_partial_fit_first_call(self.estimator, self.label_binarizer_.classes_)
+
+        if self.estimators_ is None:
+            self.estimators_ = [clone(self.estimator) for _ in self.estimator.classes_]
+
+        Y = self.label_binarizer_.transform(y)
+        Y = Y.tocsc()
+        columns = (col.toarray().ravel() for col in Y.T)
+        # In cases where individual estimators are very fast to train setting
+        # n_jobs > 1 in can results in slower performance due to the overhead
+        # of spawning threads.  See joblib issue #112.
+        self.estimators_ = Parallel(n_jobs=self.n_jobs)(delayed(_partial_fit_binary)(
+            self.estimators_[i], X, column, sample_weight=sample_weight)
+            for i, column in enumerate(columns))
+
+        return self
+
+
 
     def predict(self, X):
         """Predict multi-class targets using underlying estimators.
