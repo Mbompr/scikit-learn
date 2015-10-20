@@ -273,8 +273,6 @@ class OneVsRestClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
 
         return self
 
-
-
     def predict(self, X):
         """Predict multi-class targets using underlying estimators.
 
@@ -403,15 +401,28 @@ class OneVsRestClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         return np.array([e.intercept_.ravel() for e in self.estimators_])
 
 
-def _fit_ovo_binary(estimator, X, y, i, j):
-    """Fit a single binary estimator (one-vs-one)."""
+def _prepare_fit_ovo_binary(X, y, i, j):
+    """Keep only useful samples and create appropriate labels"""
     cond = np.logical_or(y == i, y == j)
     y = y[cond]
     y_binary = np.empty(y.shape, np.int)
     y_binary[y == i] = 0
     y_binary[y == j] = 1
     ind = np.arange(X.shape[0])
-    return _fit_binary(estimator, X[ind[cond]], y_binary, classes=[i, j])
+    X_sampled = [ind[cond]]
+    return y_binary, X_sampled
+
+
+def _fit_ovo_binary(estimator, X, y, i, j):
+    """Fit a single binary estimator (one-vs-one)."""
+    X_sampled, y_binary = _prepare_fit_ovo_binary(X, y, i, j)
+    return _fit_binary(estimator, X_sampled, y_binary, classes=[i, j])
+
+
+def _partial_fit_ovo_binary(estimator, X, y, i, j, sample_weight=None):
+    """Partial fit a single binary estimator (one-vs-one)."""
+    X_sampled, y_binary = _prepare_fit_ovo_binary(X, y, i, j)
+    return _partial_fit_binary(estimator, X_sampled, y_binary, sample_weight=sample_weight)
 
 
 class OneVsOneClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
@@ -453,6 +464,7 @@ class OneVsOneClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
     def __init__(self, estimator, n_jobs=1):
         self.estimator = estimator
         self.n_jobs = n_jobs
+        self.classes_ = None
 
     def fit(self, X, y):
         """Fit underlying estimators.
@@ -477,6 +489,56 @@ class OneVsOneClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         self.estimators_ = Parallel(n_jobs=self.n_jobs)(
             delayed(_fit_ovo_binary)(
                 self.estimator, X, y, self.classes_[i], self.classes_[j])
+            for i in range(n_classes) for j in range(i + 1, n_classes))
+
+        return self
+
+    def partial_fit(self, X, y, classes=None, sample_weight=None):
+        """Partial fit underlying estimators.
+
+        Parameters
+        ----------
+        X : (sparse) array-like, shape = [n_samples, n_features]
+            Data.
+
+        y : (sparse) array-like, shape = [n_samples] or [n_samples, n_classes]
+            Multi-class targets.
+
+        classes : array, shape = [n_classes]
+            Classes across all calls to partial_fit.
+            Can be obtained by via `np.unique(y_all)`, where y_all is the
+            target vector of the entire dataset.
+            This argument is required for the first call to partial_fit
+            and can be omitted in the subsequent calls.
+            Note that y doesn't need to contain all labels in `classes`.
+
+        sample_weight : array-like, shape (n_samples,), optional
+            Weights applied to individual samples.
+            If not provided, uniform weights are assumed.
+
+        Returns
+        -------
+        self
+        """
+
+        y = np.asarray(y)
+        check_consistent_length(X, y)
+
+        # Case you have not launched fit or partial_fit yet
+        if self.classes_ is None:
+            _check_partial_fit_first_call(self.estimator, classes)
+            self.classes_ = np.unique(y)
+
+        # Check class consistency between estimator and label binarizer
+        _check_partial_fit_first_call(self.estimator, self.classes_)
+
+        if self.estimators_ is None:
+            self.estimators_ = [clone(self.estimator) for _ in self.estimator.classes_]
+
+        n_classes = self.classes_.shape[0]
+        self.estimators_ = Parallel(n_jobs=self.n_jobs)(
+            delayed(_partial_fit_ovo_binary)(
+                self.estimator, X, y, self.classes_[i], self.classes_[j], sample_weight=sample_weight)
             for i in range(n_classes) for j in range(i + 1, n_classes))
 
         return self
